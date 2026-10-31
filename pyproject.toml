@@ -5,6 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "fastapi>=0.115",
+    "firebase-admin>=6.7",
     "google-genai>=2.25.0",
     "livekit-agents>=1.0",
     "livekit-plugins-silero>=1.0",
@@ -12,4 +14,6 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "sounddevice>=0.5.0",
     "soundfile>=0.13.0",
+    "uvicorn>=0.34",
+    "vosk==0.3.42",
 ]

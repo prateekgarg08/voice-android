@@ -6,3 +6,7 @@ livekit-agents>=1.0
 livekit-plugins-silero>=1.0
 openai>=1.75.0
 python-dotenv>=1.0.1
+vosk==0.3.42
+fastapi>=0.115
+uvicorn>=0.34
+firebase-admin>=6.7

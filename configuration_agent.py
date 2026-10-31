@@ -6,8 +6,8 @@ import sys
 import time
 import uuid
 
-from agent import (TURN_ID, configure_logging, load_environment, log_event,
-                   record, run_turn, speak, transcribe)
+from agent import (TURN_ID, configure_logging, listen_for_wake, load_environment, log_event,
+                   run_turn, speak)
 from configuration_tools import ConfigurationTools, TOOLS, SYSTEM
 
 def main():
@@ -38,32 +38,22 @@ def main():
     history = []
     tools = ConfigurationTools(args.config, args.camera_index)
     log_event("voice_test_ready", mode="text" if args.text else "voice", model=args.model)
-    print("Configuration agent ready. No Android device or ADB is required. Type 'quit' to exit.")
+    print("Configuration agent ready. No Android device or ADB is required.")
+    print("Type quit to exit." if args.text else "Say hello deep followed by your request. Press Ctrl+C to exit.")
     print("OpenAI fallback:", "enabled" if os.getenv("OPENAI_API_KEY") else "disabled (set OPENAI_API_KEY in .env)")
     while True:
         try:
-            entry = input("Command: " if args.text else "Press Enter to record, or type quit: ").strip()
-            if entry.lower() in ("quit", "exit"):
-                log_event("voice_test_stopped", reason="user_exit")
-                break
             TURN_ID.set(uuid.uuid4().hex)
             log_event("voice_turn_started", mode="text" if args.text else "voice")
             if args.text:
-                command = entry
+                command = input("Command: ").strip()
+                if command.lower() in ("quit", "exit"):
+                    log_event("voice_test_stopped", reason="user_exit")
+                    break
                 log_event("voice_input_received", text=command, source="typed")
             else:
-                log_event("recording_started", silence_seconds=args.silence_seconds)
-                started = time.perf_counter()
-                path = record(args.silence_seconds, args.start_timeout, args.max_speech_seconds)
-                log_event("recording_completed", duration_ms=round((time.perf_counter() - started) * 1000, 1))
-                try:
-                    print("Transcribing...", flush=True)
-                    log_event("transcription_started", model=os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-3.5-transcribe"))
-                    started = time.perf_counter()
-                    command = transcribe(client, path, os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-3.5-transcribe"))
-                    log_event("transcription_completed", text=command, duration_ms=round((time.perf_counter() - started) * 1000, 1))
-                finally:
-                    os.unlink(path)
+                command = listen_for_wake(client, args.silence_seconds, args.start_timeout, args.max_speech_seconds,
+                                          os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-3.5-transcribe"))
                 print(f"You: {command}")
             if not command:
                 log_event("voice_turn_completed", outcome="empty_input")

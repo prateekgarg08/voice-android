@@ -1,6 +1,6 @@
 # Android voice agent
 
-A local, push-to-talk assistant that navigates an Android app and changes its settings through tool calls. It runs on your computer and controls a connected Android device or emulator over ADB. The agent reads the UI Automator accessibility hierarchy, chooses a control, taps or scrolls, and inspects the result. LiveKit’s Silero voice activity detector captures speech until a pause, then the audio is transcribed with Gemini, and the reply is spoken using Gemini text-to-speech. A text-only mode is available for debugging.
+A local voice assistant that navigates an Android app and changes its settings through tool calls. It runs on your computer and controls a connected Android device or emulator over ADB. The agent reads the UI Automator accessibility hierarchy, chooses a control, taps or scrolls, and inspects the result. LiveKit’s Silero voice activity detector captures speech until a pause, then the audio is transcribed with Gemini, and the reply is spoken using Gemini text-to-speech. A text-only mode is available for debugging.
 
 ## Requirements
 
@@ -25,12 +25,12 @@ Both scripts load the `.env` file next to `agent.py` at startup. Existing shell 
 Check that `adb devices` lists the device as `device`, then open the target app on the device. If multiple devices are connected, pass `--serial SERIAL` from `adb devices`.
 
 ```sh
-python agent.py                         # press Enter and speak; pause to finish
+python agent.py                         # say "hello deep" and your request; pause to finish
 python agent.py --silence-seconds 1.2    # wait longer before ending a turn
 python agent.py --text          # typed commands, no microphone or audio output
 ```
 
-Try: “Open settings and turn off notifications” or “Set the theme to dark.” The agent prints each tool call and responds after the task. Follow-up requests share conversation context; type `quit` to exit. Recording ends after silence; the agent processes one turn at a time and is not interruption-aware. The microphone and speaker are on the computer, not on the Android device.
+Try: “Open settings and turn off notifications” or “Set the theme to dark.” The agent prints each tool call and responds after the task. Follow-up requests share conversation context; press Ctrl+C to exit voice mode, or type `quit` in text mode. Recording ends after silence; the agent processes one turn at a time and is not interruption-aware. The microphone and speaker are on the computer, not on the Android device.
 
 Optional environment variables: `GEMINI_MODEL` (default `gemini-3.8-flash`), `GEMINI_TRANSCRIBE_MODEL` (default `gemini-3.8-flash`), and `GEMINI_TTS_MODEL` (default `gemini-3.8-flash-tts`). Model availability depends on your account. API usage incurs charges.
 
@@ -59,12 +59,12 @@ You can also set `AGENT_LOG_FILE` and `AGENT_LOG_LEVEL`. INFO logs contain conve
 Use the standalone conversation test to check the microphone, Gemini transcription, the model response, and spoken output without ADB or an Android device. Install the same requirements and set `GEMINI_API_KEY` as described above, then run:
 
 ```sh
-python voice_test.py                       # press Enter, speak, then pause
+python voice_test.py                       # say "hello deep" and your request; pause to finish
 python voice_test.py --silence-seconds 1.2  # wait longer before ending a turn
 python voice_test.py --text         # test Gemini conversation without audio
 ```
 
-Type `quit` at the prompt to exit. Both scripts wait up to 15 seconds for speech to start, then up to 60 seconds for the utterance to end. Change these limits with `--start-timeout` and `--max-speech-seconds`. If a limit is reached, that turn is discarded and you can try again. LiveKit’s Silero VAD runs locally; no LiveKit server or account is needed. The test keeps conversation history in memory, but it has no Android tools and cannot change device settings. It uses the same model environment variables and logging options as `agent.py`.
+Press Ctrl+C to exit voice mode, or type `quit` in text mode. Both scripts wait up to 15 seconds for speech to start, then up to 60 seconds for the utterance to end. Change these limits with `--start-timeout` and `--max-speech-seconds`. If a limit is reached, that turn is discarded and you can try again. LiveKit’s Silero VAD runs locally; no LiveKit server or account is needed. The test keeps conversation history in memory, but it has no Android tools and cannot change device settings. It uses the same model environment variables and logging options as `agent.py`.
 
 The voice test displays its current stage in the terminal and writes status events to the same JSONL log: recording, transcription (including the recognized text), response generation, speech playback, completion, and errors. Each turn shares a turn ID. Transcripts and responses in the logs can contain sensitive information.
 
@@ -112,3 +112,42 @@ Try “What sound is set for the chair?”, “Set the chair sound to chime”, 
 ### Android camera view
 
 The main `agent.py` also exposes `get_image`. For a camera request, it opens the connected Android device's camera app with the standard still-camera intent, waits for the preview, takes an ADB screenshot of the viewfinder, and presses Back. The screenshot is sent to Gemini or the OpenAI fallback for analysis. It does not press the shutter or save a photo. The device must be unlocked, its camera app available, and any first-run camera permissions already granted. Depending on the device and camera app, protected or hardware-rendered previews may appear black in screenshots; a permission prompt or camera controls may also be visible. If that happens, the agent cannot reliably describe the scene. Camera screenshots are not written to the JSON log.
+
+## Wake word
+
+Voice mode listens for **hello deep** in all agent and test scripts. Say “Hello deep, open settings,” or say “Hello deep,” pause, and then give your request. The wake phrase must be the first recognized words. If no follow-up is heard before `--start-timeout`, say hello deep again. Text mode does not require the wake word. The agent does not listen while processing a request or speaking.
+
+LiveKit detects speech, and Vosk recognizes the wake phrase locally. Speech before the wake phrase is processed on this computer and is not sent to Gemini or saved in transcription logs; each segment is temporarily recorded and deleted after the local check. After a wake phrase is detected, a command in the same utterance or the next utterance is sent to Gemini (or OpenAI on a transcription 503) and may be logged. The first use may download a small Vosk English model if one is not installed. Set `VOSK_WAKE_MODEL_PATH` to use an existing compatible model. Local wake recognition can miss or mishear the phrase.
+
+## Firebase-authenticated API
+
+`api.py` exposes the configuration agent over FastAPI. Every `/v1/` agent endpoint requires a Firebase Authentication **ID token** in `Authorization: Bearer <ID_TOKEN>`. The server validates the signature, project, expiration, revocation, and disabled-user status using the Firebase Admin SDK before it reads or processes a command or audio body. Invalid or missing tokens receive HTTP 401; authentication-service failures fail closed with HTTP 503. Optionally set `ALLOWED_FIREBASE_UIDS` to a comma-separated allowlist; users outside it receive HTTP 403. If it is unset, any valid user of the Firebase project is allowed, so restrict Firebase sign-up or configure the allowlist.
+
+1. Create a Firebase project, enable Firebase Authentication and your intended sign-in provider, and sign in users through the Firebase client SDK. Obtain a fresh **ID token** from that SDK; do not use a Firebase API key, custom token, or service account credential as the bearer token.
+2. Configure `FIREBASE_PROJECT_ID` in `.env`. Give the server Firebase Admin credentials using Application Default Credentials or set `GOOGLE_APPLICATION_CREDENTIALS` to a service-account JSON file **outside this repository**. The identity needs the appropriate Firebase Authentication access for revocation checks. Keep both server credentials and model API keys on the server, never in the client.
+3. Install dependencies and start the service:
+
+   ```sh
+   uv sync
+   uv run uvicorn api:app --host 127.0.0.1 --port 8000
+   ```
+
+4. After obtaining an ID token from your signed-in client, send it as a bearer token. For a local shell test, put the token in `FIREBASE_ID_TOKEN` without committing it:
+
+   ```sh
+   curl -H "Authorization: Bearer $FIREBASE_ID_TOKEN" http://127.0.0.1:8000/v1/me
+   curl -H "Authorization: Bearer $FIREBASE_ID_TOKEN" -H 'Content-Type: application/json' \\
+     -d '{"command":"What sound is configured for the chair?"}' http://127.0.0.1:8000/v1/agent/turn
+   curl -H "Authorization: Bearer $FIREBASE_ID_TOKEN" -H 'Content-Type: audio/wav' \\
+     --data-binary @command.wav http://127.0.0.1:8000/v1/agent/audio
+   curl -H "Authorization: Bearer $FIREBASE_ID_TOKEN" -H 'Content-Type: application/json' \\
+     -d '{"text":"Hello!"}' http://127.0.0.1:8000/v1/agent/speech --output reply.wav
+   ```
+
+The text endpoint returns `{ "reply": ... }`; the WAV endpoint returns `{ "transcript": ..., "reply": ... }`; the speech endpoint returns WAV audio. Requests are stateless: conversation history is not shared across requests. The client handles wake-word detection, recording, and playback. The API uses `CONFIG_FILE` for the server's JSON file and the Android `get_image` tool uses ADB on the server (`ANDROID_SERIAL` selects a device). All allowed users share that configuration and device. Agent turns are serialized within one server process; run a single worker while sharing the device/configuration.
+
+The service binds to localhost in the example. Use HTTPS and appropriate network controls when deploying remotely, and never expose credentials or bearer tokens in logs. The API defaults to `WARNING` file logging unless `AGENT_LOG_LEVEL` is configured; enabling INFO can save transcripts, camera/tool data, and uploaded audio as described above. Direct local scripts such as `agent.py` and `tool_test.py` are development tools and do not enforce API authentication: protect the host and credentials from untrusted users. The Firebase Auth emulator is deliberately rejected by this API.
+
+Firebase references: [Verify ID tokens](https://firebase.google.com/docs/auth/admin/verify-id-tokens), [Manage user sessions](https://firebase.google.com/docs/auth/admin/manage-sessions).
+
+For an interactive local sign-in check, start the API, then run `uv run firebase_login_test.py` in a second terminal. It prompts for the Firebase project Web API key and an Email/Password user's credentials, signs in, and calls `/v1/me`. It prints the Firebase UID but does not print the password or ID token.

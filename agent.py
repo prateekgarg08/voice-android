@@ -545,6 +545,80 @@ def transcribe(client, path, model):
     return transcription_text(response)
 
 
+_WAKE_MODEL = None
+_WAKE_PATTERN = re.compile(r"^\s*hello[\s,.:;!?-]+deep\b[\s,.:;!?-]*", re.IGNORECASE)
+
+
+def local_wake_text(path):
+    """Recognize a VAD speech segment locally; never send it to a cloud API."""
+    global _WAKE_MODEL
+    from vosk import KaldiRecognizer, Model, SetLogLevel
+    SetLogLevel(-1)
+    if _WAKE_MODEL is None:
+        model_path = os.getenv("VOSK_WAKE_MODEL_PATH")
+        bundled_path = Path(__file__).resolve().parent / ".models" / "vosk-model-small-en-us-0.15"
+        if not model_path and bundled_path.is_dir():
+            model_path = str(bundled_path)
+        print("Loading local wake-word model...", flush=True)
+        _WAKE_MODEL = Model(model_path=model_path) if model_path else Model(lang="en-us")
+    with wave.open(path, "rb") as f:
+        recognizer = KaldiRecognizer(_WAKE_MODEL, f.getframerate())
+        pieces = []
+        while chunk := f.readframes(4000):
+            if recognizer.AcceptWaveform(chunk):
+                pieces.append(json.loads(recognizer.Result()).get("text", ""))
+        pieces.append(json.loads(recognizer.FinalResult()).get("text", ""))
+    return " ".join(piece for piece in pieces if piece).strip()
+
+
+def listen_for_wake(client, silence_seconds=0.8, start_timeout=15, max_speech_seconds=60,
+                    transcribe_model="gemini-3.8-flash"):
+    """Detect 'hello deep' locally before sending an utterance for transcription."""
+    waiting_for_command = False
+    while True:
+        log_event("recording_started", silence_seconds=silence_seconds, waiting_for_command=waiting_for_command)
+        started = time.perf_counter()
+        try:
+            path = record(silence_seconds, start_timeout, max_speech_seconds)
+        except TimeoutError as exc:
+            if str(exc) != "No speech detected.":
+                raise
+            if waiting_for_command:
+                print("No command heard. Say hello deep to try again.", flush=True)
+                log_event("wake_command_timeout")
+                waiting_for_command = False
+            continue
+        log_event("recording_completed", duration_ms=round((time.perf_counter() - started) * 1000, 1))
+        try:
+            if not waiting_for_command:
+                local_text = local_wake_text(path)
+                match = _WAKE_PATTERN.match(local_text)
+                if not match:
+                    log_event("wake_word_ignored")
+                    continue
+                log_event("wake_word_detected", wake_word="hello deep")
+                if not local_text[match.end():].strip():
+                    waiting_for_command = True
+                    print("I'm listening. What would you like me to do?", flush=True)
+                    continue
+            print("Transcribing command...", flush=True)
+            log_event("transcription_started", model=transcribe_model)
+            started = time.perf_counter()
+            text = transcribe(client, path, transcribe_model).strip()
+            log_event("transcription_completed", text=text, duration_ms=round((time.perf_counter() - started) * 1000, 1))
+        finally:
+            os.unlink(path)
+        if not text:
+            continue
+        match = _WAKE_PATTERN.match(text)
+        command = text[match.end():].strip() if match else text
+        if command:
+            log_event("wake_command_received")
+            return command
+        waiting_for_command = True
+        print("I'm listening. What would you like me to do?", flush=True)
+
+
 def speak(client, text, model):
     import sounddevice as sd
     import soundfile as sf
@@ -602,23 +676,20 @@ def main():
             raise RuntimeError(f"Device state is {state!r}")
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         sys.exit(f"ADB device unavailable: {exc}")
-    print("Connected. Open the target app on the unlocked device. Type 'quit' to exit.")
+    print("Connected. Open the target app on the unlocked device.")
+    print("Type quit to exit." if args.text else "Say hello deep followed by your request. Press Ctrl+C to exit.")
     print("OpenAI fallback:", "enabled" if os.getenv("OPENAI_API_KEY") else "disabled (set OPENAI_API_KEY in .env)")
     history = []
     while True:
         try:
-            entry = input("Command: " if args.text else "Press Enter to record, or type quit: ").strip()
-            if entry.lower() in ("quit", "exit"):
-                break
             TURN_ID.set(uuid.uuid4().hex)
             if args.text:
-                command = entry
+                command = input("Command: ").strip()
+                if command.lower() in ("quit", "exit"):
+                    break
             else:
-                path = record(args.silence_seconds, args.start_timeout, args.max_speech_seconds)
-                try:
-                    command = transcribe(client, path, os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-3.8-flash"))
-                finally:
-                    os.unlink(path)
+                command = listen_for_wake(client, args.silence_seconds, args.start_timeout, args.max_speech_seconds,
+                                          os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-3.8-flash"))
                 print(f"You: {command}")
             if not command:
                 continue
@@ -626,7 +697,7 @@ def main():
             print(f"Agent: {reply}")
             if not args.text:
                 speak(client, reply, os.getenv("GEMINI_TTS_MODEL", "gemini-3.8-flash-tts"))
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             print("\nStopped.")
             break
         except Exception as exc:
