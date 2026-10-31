@@ -1,0 +1,15 @@
+[project]
+name = "voice-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "google-genai>=2.25.0",
+    "livekit-agents>=1.0",
+    "livekit-plugins-silero>=1.0",
+    "openai>=1.75.0",
+    "python-dotenv>=1.0.1",
+    "sounddevice>=0.5.0",
+    "soundfile>=0.13.0",
+]

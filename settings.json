@@ -1,0 +1,9 @@
+{
+  "objects": [
+    {
+      "chair": {
+        "sound": "beep"
+      }
+    }
+  ]
+}
